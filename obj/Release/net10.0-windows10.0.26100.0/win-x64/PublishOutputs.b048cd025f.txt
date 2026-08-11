@@ -1,7 +1,0 @@
-C:\Games\Tools\музон\музон.pdb
-C:\Games\Tools\музон\D3DCompiler_47_cor3.dll
-C:\Games\Tools\музон\PenImc_cor3.dll
-C:\Games\Tools\музон\PresentationNative_cor3.dll
-C:\Games\Tools\музон\vcruntime140_cor3.dll
-C:\Games\Tools\музон\wpfgfx_cor3.dll
-C:\Games\Tools\музон\музон.exe

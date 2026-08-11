@@ -1,7 +1,0 @@
-C:\Games\Tools\MusicOverlay\MusicOverlay.pdb
-C:\Games\Tools\MusicOverlay\D3DCompiler_47_cor3.dll
-C:\Games\Tools\MusicOverlay\PenImc_cor3.dll
-C:\Games\Tools\MusicOverlay\PresentationNative_cor3.dll
-C:\Games\Tools\MusicOverlay\vcruntime140_cor3.dll
-C:\Games\Tools\MusicOverlay\wpfgfx_cor3.dll
-C:\Games\Tools\MusicOverlay\MusicOverlay.exe
