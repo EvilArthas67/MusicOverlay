@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "dgSpecHash": "apJkotxEpS0=",
+  "success": true,
+  "projectFilePath": "C:\\Users\\danil\\source\\repos\\музон\\музон\\MusicOverlay.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\danil\\.nuget\\packages\\microsoft.windows.sdk.net.ref\\10.0.26100.57\\microsoft.windows.sdk.net.ref.10.0.26100.57.nupkg.sha512"
+  ],
+  "logs": []
+}
