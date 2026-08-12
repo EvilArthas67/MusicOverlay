@@ -1,10 +1,13 @@
 ﻿using System;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
+using System.Windows.Interop;
+
 using Windows.Media.Control;
 
 namespace MusicOverlay
@@ -33,29 +36,224 @@ namespace MusicOverlay
         private string lastSongTitle = "";
         private string lastArtist = "";
 
-        private bool manualTrackChange = false;
+        // =========================================================
+        // LOW LEVEL KEYBOARD HOOK
+        // =========================================================
 
+        private const int WH_KEYBOARD_LL = 13;
+
+        private const int WM_KEYDOWN = 0x0100;
+        private const int WM_KEYUP = 0x0101;
+        private const int WM_SYSKEYDOWN = 0x0104;
+        private const int WM_SYSKEYUP = 0x0105;
+
+        private const int VK_MEDIA_NEXT_TRACK = 0xB0;
+        private const int VK_MEDIA_PREV_TRACK = 0xB1;
+        private const int VK_MEDIA_PLAY_PAUSE = 0xB3;
+
+        private static IntPtr keyboardHook = IntPtr.Zero;
+
+        private static LowLevelKeyboardProc? keyboardProc;
+
+        private HwndSource? hwndSource;
+
+
+        // =========================================================
+        // WINDOWS API
+        // =========================================================
+
+        private delegate IntPtr LowLevelKeyboardProc(
+            int nCode,
+            IntPtr wParam,
+            IntPtr lParam);
+
+
+        [DllImport(
+            "user32.dll",
+            SetLastError = true)]
+        private static extern IntPtr SetWindowsHookEx(
+            int idHook,
+            LowLevelKeyboardProc lpfn,
+            IntPtr hMod,
+            uint dwThreadId);
+
+
+        [DllImport(
+            "user32.dll",
+            SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool UnhookWindowsHookEx(
+            IntPtr hhk);
+
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr CallNextHookEx(
+            IntPtr hhk,
+            int nCode,
+            IntPtr wParam,
+            IntPtr lParam);
+
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GetModuleHandle(
+            string? lpModuleName);
+
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct KBDLLHOOKSTRUCT
+        {
+            public uint vkCode;
+            public uint scanCode;
+            public uint flags;
+            public uint time;
+            public UIntPtr dwExtraInfo;
+        }
+
+
+        // =========================================================
+        // КОНСТРУКТОР
+        // =========================================================
 
         public MainWindow()
         {
             InitializeComponent();
 
+
             updateTimer = new DispatcherTimer
             {
-                Interval = TimeSpan.FromMilliseconds(100)
+                Interval =
+                    TimeSpan.FromMilliseconds(100)
             };
 
-            updateTimer.Tick += UpdateTimer_Tick;
+
+            updateTimer.Tick +=
+                UpdateTimer_Tick;
 
 
             hideOverlayTimer = new DispatcherTimer
             {
-                Interval = TimeSpan.FromSeconds(3)
+                Interval =
+                    TimeSpan.FromMilliseconds(3000)
             };
 
-            hideOverlayTimer.Tick += HideOverlayTimer_Tick;
 
-            Loaded += MainWindow_Loaded;
+            hideOverlayTimer.Tick +=
+                HideOverlayTimer_Tick;
+
+
+            Loaded +=
+                MainWindow_Loaded;
+
+
+            SourceInitialized +=
+                MainWindow_SourceInitialized;
+
+
+            Closed +=
+                MainWindow_Closed;
+        }
+
+
+        // =========================================================
+        // ЗАПУСК KEYBOARD HOOK
+        // =========================================================
+
+        private void MainWindow_SourceInitialized(
+            object? sender,
+            EventArgs e)
+        {
+            hwndSource =
+                PresentationSource.FromVisual(this)
+                as HwndSource;
+
+
+            keyboardProc =
+                KeyboardHookCallback;
+
+
+            keyboardHook =
+                SetWindowsHookEx(
+                    WH_KEYBOARD_LL,
+                    keyboardProc,
+                    GetModuleHandle(null),
+                    0);
+        }
+
+
+        // =========================================================
+        // ОСТАНОВКА KEYBOARD HOOK
+        // =========================================================
+
+        private void MainWindow_Closed(
+            object? sender,
+            EventArgs e)
+        {
+            hideOverlayTimer.Stop();
+
+            updateTimer.Stop();
+
+
+            if (keyboardHook != IntPtr.Zero)
+            {
+                UnhookWindowsHookEx(
+                    keyboardHook);
+
+                keyboardHook =
+                    IntPtr.Zero;
+            }
+
+
+            keyboardProc = null;
+        }
+
+
+        // =========================================================
+        // LOW LEVEL KEYBOARD CALLBACK
+        // =========================================================
+
+        private IntPtr KeyboardHookCallback(
+            int nCode,
+            IntPtr wParam,
+            IntPtr lParam)
+        {
+            if (nCode >= 0)
+            {
+                bool keyDown =
+                    wParam == (IntPtr)WM_KEYDOWN ||
+                    wParam == (IntPtr)WM_SYSKEYDOWN;
+
+
+                if (keyDown)
+                {
+                    KBDLLHOOKSTRUCT data =
+                        Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(
+                            lParam);
+
+
+                    uint vk =
+                        data.vkCode;
+
+
+                    if (vk == VK_MEDIA_NEXT_TRACK ||
+                        vk == VK_MEDIA_PREV_TRACK ||
+                        vk == VK_MEDIA_PLAY_PAUSE)
+                    {
+                        // Переключаемся в UI-поток.
+                        Dispatcher.BeginInvoke(
+                            new Action(
+                                ShowOverlay));
+                    }
+                }
+            }
+
+
+            // НИКОГДА не блокируем клавишу.
+            // Яндекс Музыка продолжает получать её.
+            return CallNextHookEx(
+                keyboardHook,
+                nCode,
+                wParam,
+                lParam);
         }
 
 
@@ -70,9 +268,12 @@ namespace MusicOverlay
                 Show();
             }
 
+
             Topmost = true;
 
+
             hideOverlayTimer.Stop();
+
             hideOverlayTimer.Start();
         }
 
@@ -87,12 +288,15 @@ namespace MusicOverlay
         {
             hideOverlayTimer.Stop();
 
+
             if (isMouseOverProgress ||
                 isDraggingSlider)
             {
                 hideOverlayTimer.Start();
+
                 return;
             }
+
 
             Hide();
         }
@@ -108,14 +312,17 @@ namespace MusicOverlay
         {
             PositionWindowInCorner();
 
+
             try
             {
                 sessionManager =
                     await GlobalSystemMediaTransportControlsSessionManager
                         .RequestAsync();
 
+
                 currentSession =
                     sessionManager.GetCurrentSession();
+
 
                 if (currentSession != null)
                 {
@@ -126,9 +333,10 @@ namespace MusicOverlay
                     UpdatePlaybackState();
                 }
 
+
                 updateTimer.Start();
 
-                ShowOverlay();
+                // При запуске НЕ показываем.
             }
             catch
             {
@@ -138,7 +346,7 @@ namespace MusicOverlay
 
 
         // =========================================================
-        // ЛЕВЫЙ ВЕРХНИЙ УГОЛ
+        // ПОЗИЦИЯ ОКНА
         // =========================================================
 
         private void PositionWindowInCorner()
@@ -148,8 +356,10 @@ namespace MusicOverlay
                 Rect workArea =
                     SystemParameters.WorkArea;
 
+
                 Left =
                     workArea.Left + 20;
+
 
                 Top =
                     workArea.Top + 20;
@@ -182,25 +392,21 @@ namespace MusicOverlay
                     return;
 
 
-                // =================================================
-                // ИЗМЕНИЛАСЬ САМА MEDIA SESSION
-                // =================================================
-
                 if (currentSession != session)
                 {
-                    bool previousTrackWasNearEnd =
-                        WasCurrentTrackNearEnd();
+                    currentSession =
+                        session;
 
-
-                    currentSession = session;
 
                     hasApiPosition = false;
+
 
                     lastApiPosition =
                         TimeSpan.MinValue;
 
 
                     lastSongTitle = "";
+
                     lastArtist = "";
 
 
@@ -211,15 +417,7 @@ namespace MusicOverlay
                     UpdatePlaybackState();
 
 
-                    // Если предыдущий трек НЕ был практически
-                    // в самом конце — значит пользователь
-                    // переключил его вручную.
-                    if (!previousTrackWasNearEnd)
-                    {
-                        ShowOverlay();
-                    }
-
-
+                    // НЕ показываем оверлей.
                     return;
                 }
 
@@ -239,49 +437,7 @@ namespace MusicOverlay
 
 
         // =========================================================
-        // ПРОВЕРКА — ЗАКАНЧИВАЛСЯ ЛИ ТРЕК
-        // =========================================================
-
-        private bool WasCurrentTrackNearEnd()
-        {
-            try
-            {
-                if (currentDuration.TotalSeconds <= 0)
-                    return false;
-
-
-                TimeSpan position =
-                    currentPosition;
-
-
-                if (isPlaying)
-                {
-                    position +=
-                        DateTime.UtcNow -
-                        positionStartedAt;
-                }
-
-
-                double remaining =
-                    (
-                        currentDuration -
-                        position
-                    ).TotalSeconds;
-
-
-                // Небольшой запас, потому что API может
-                // обновляться с задержкой.
-                return remaining <= 2.5;
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-
-        // =========================================================
-        // ПРОВЕРКА СМЕНЫ ТРЕКА
+        // СМЕНА ТРЕКА
         // =========================================================
 
         private async System.Threading.Tasks.Task CheckSongChange()
@@ -309,32 +465,34 @@ namespace MusicOverlay
                     properties.Artist ?? "";
 
 
-                // Первый запуск
                 if (lastSongTitle == "")
                 {
-                    lastSongTitle = title;
-                    lastArtist = artist;
+                    lastSongTitle =
+                        title;
+
+
+                    lastArtist =
+                        artist;
+
 
                     return;
                 }
 
 
-                // =================================================
-                // ТРЕК ИЗМЕНИЛСЯ
-                // =================================================
-
                 if (title != lastSongTitle ||
                     artist != lastArtist)
                 {
-                    bool previousTrackWasNearEnd =
-                        WasCurrentTrackNearEnd();
+                    lastSongTitle =
+                        title;
 
 
-                    lastSongTitle = title;
-                    lastArtist = artist;
+                    lastArtist =
+                        artist;
 
 
-                    hasApiPosition = false;
+                    hasApiPosition =
+                        false;
+
 
                     lastApiPosition =
                         TimeSpan.MinValue;
@@ -347,15 +505,7 @@ namespace MusicOverlay
                     UpdatePlaybackState();
 
 
-                    // Если трек не был в конце —
-                    // пользователь его переключил.
-                    if (!previousTrackWasNearEnd)
-                    {
-                        ShowOverlay();
-                    }
-
-
-                    manualTrackChange = false;
+                    // НЕ показываем.
                 }
             }
             catch
@@ -365,7 +515,7 @@ namespace MusicOverlay
 
 
         // =========================================================
-        // PLAY / PAUSE
+        // PLAY / PAUSE СОСТОЯНИЕ
         // =========================================================
 
         private void UpdatePlaybackState()
@@ -391,10 +541,6 @@ namespace MusicOverlay
 
                 if (newPlayingState != isPlaying)
                 {
-                    bool nearEnd =
-                        WasCurrentTrackNearEnd();
-
-
                     isPlaying =
                         newPlayingState;
 
@@ -403,10 +549,7 @@ namespace MusicOverlay
                         DateTime.UtcNow;
 
 
-                    if (!nearEnd)
-                    {
-                        ShowOverlay();
-                    }
+                    // НЕ показываем.
                 }
 
 
@@ -419,7 +562,7 @@ namespace MusicOverlay
 
 
         // =========================================================
-        // ПРОВЕРКА ВНЕШНЕЙ ПЕРЕМОТКИ
+        // ВНЕШНЯЯ ПЕРЕМОТКА
         // =========================================================
 
         private void CheckExternalPositionChange()
@@ -457,13 +600,17 @@ namespace MusicOverlay
 
                 if (!hasApiPosition)
                 {
-                    hasApiPosition = true;
+                    hasApiPosition =
+                        true;
+
 
                     lastApiPosition =
                         apiPosition;
 
+
                     currentPosition =
                         apiPosition;
+
 
                     positionStartedAt =
                         DateTime.UtcNow;
@@ -471,6 +618,7 @@ namespace MusicOverlay
 
                     UpdateVisualPosition(
                         currentPosition);
+
 
                     return;
                 }
@@ -527,8 +675,7 @@ namespace MusicOverlay
                         }
 
 
-                        // Пользователь перемотал трек
-                        ShowOverlay();
+                        // НЕ показываем.
                     }
                 }
             }
@@ -581,10 +728,6 @@ namespace MusicOverlay
                     properties.Artist ?? "";
 
 
-                // =================================================
-                // ОБЛОЖКА
-                // =================================================
-
                 try
                 {
                     if (properties.Thumbnail != null)
@@ -624,12 +767,14 @@ namespace MusicOverlay
                     }
                     else
                     {
-                        AlbumArt.Source = null;
+                        AlbumArt.Source =
+                            null;
                     }
                 }
                 catch
                 {
-                    AlbumArt.Source = null;
+                    AlbumArt.Source =
+                        null;
                 }
             }
             catch
@@ -693,7 +838,8 @@ namespace MusicOverlay
                     position;
 
 
-                hasApiPosition = true;
+                hasApiPosition =
+                    true;
 
 
                 positionStartedAt =
@@ -841,7 +987,9 @@ namespace MusicOverlay
             object sender,
             MouseEventArgs e)
         {
-            isMouseOverProgress = true;
+            isMouseOverProgress =
+                true;
+
 
             ProgressThumb.Visibility =
                 Visibility.Visible;
@@ -854,7 +1002,9 @@ namespace MusicOverlay
         {
             if (!isDraggingSlider)
             {
-                isMouseOverProgress = false;
+                isMouseOverProgress =
+                    false;
+
 
                 ProgressThumb.Visibility =
                     Visibility.Collapsed;
@@ -863,7 +1013,7 @@ namespace MusicOverlay
 
 
         // =========================================================
-        // НАЖАТИЕ ПОЛЗУНКА
+        // НАЧАЛО ПЕРЕМОТКИ
         // =========================================================
 
         private void ProgressSlider_PreviewMouseLeftButtonDown(
@@ -877,7 +1027,8 @@ namespace MusicOverlay
             ShowOverlay();
 
 
-            isDraggingSlider = true;
+            isDraggingSlider =
+                true;
 
 
             ProgressThumb.Visibility =
@@ -890,7 +1041,8 @@ namespace MusicOverlay
             ProgressSlider.CaptureMouse();
 
 
-            e.Handled = true;
+            e.Handled =
+                true;
         }
 
 
@@ -912,7 +1064,8 @@ namespace MusicOverlay
             SetSliderFromMouse(e);
 
 
-            e.Handled = true;
+            e.Handled =
+                true;
         }
 
 
@@ -931,7 +1084,8 @@ namespace MusicOverlay
             SetSliderFromMouse(e);
 
 
-            isDraggingSlider = false;
+            isDraggingSlider =
+                false;
 
 
             ProgressSlider.ReleaseMouseCapture();
@@ -950,7 +1104,8 @@ namespace MusicOverlay
             ShowOverlay();
 
 
-            e.Handled = true;
+            e.Handled =
+                true;
         }
 
 
@@ -1066,7 +1221,7 @@ namespace MusicOverlay
 
 
         // =========================================================
-        // PLAY / PAUSE
+        // PLAY / PAUSE КНОПКА ОВЕРЛЕЯ
         // =========================================================
 
         private async void PlayPauseButton_Click(
@@ -1110,7 +1265,8 @@ namespace MusicOverlay
                         .TryPauseAsync();
 
 
-                    isPlaying = false;
+                    isPlaying =
+                        false;
                 }
                 else
                 {
@@ -1118,7 +1274,8 @@ namespace MusicOverlay
                         .TryPlayAsync();
 
 
-                    isPlaying = true;
+                    isPlaying =
+                        true;
 
 
                     positionStartedAt =
@@ -1130,9 +1287,6 @@ namespace MusicOverlay
 
 
                 UpdatePlayPauseIcon();
-
-
-                ShowOverlay();
             }
             catch
             {
@@ -1141,7 +1295,7 @@ namespace MusicOverlay
 
 
         // =========================================================
-        // ИКОНКА PLAY / PAUSE
+        // PLAY ICON
         // =========================================================
 
         private void UpdatePlayPauseIcon()
@@ -1171,7 +1325,7 @@ namespace MusicOverlay
 
 
         // =========================================================
-        // КНОПКА НАЗАД
+        // PREVIOUS
         // =========================================================
 
         private async void PreviousButton_Click(
@@ -1184,8 +1338,6 @@ namespace MusicOverlay
 
             try
             {
-                manualTrackChange = true;
-
                 ShowOverlay();
 
 
@@ -1196,7 +1348,9 @@ namespace MusicOverlay
                 await System.Threading.Tasks.Task.Delay(400);
 
 
-                hasApiPosition = false;
+                hasApiPosition =
+                    false;
+
 
                 lastApiPosition =
                     TimeSpan.MinValue;
@@ -1207,19 +1361,15 @@ namespace MusicOverlay
                 SyncPosition();
 
                 UpdatePlaybackState();
-
-
-                ShowOverlay();
             }
             catch
             {
-                manualTrackChange = false;
             }
         }
 
 
         // =========================================================
-        // КНОПКА ВПЕРЁД
+        // NEXT
         // =========================================================
 
         private async void NextButton_Click(
@@ -1232,8 +1382,6 @@ namespace MusicOverlay
 
             try
             {
-                manualTrackChange = true;
-
                 ShowOverlay();
 
 
@@ -1244,7 +1392,9 @@ namespace MusicOverlay
                 await System.Threading.Tasks.Task.Delay(400);
 
 
-                hasApiPosition = false;
+                hasApiPosition =
+                    false;
+
 
                 lastApiPosition =
                     TimeSpan.MinValue;
@@ -1255,13 +1405,9 @@ namespace MusicOverlay
                 SyncPosition();
 
                 UpdatePlaybackState();
-
-
-                ShowOverlay();
             }
             catch
             {
-                manualTrackChange = false;
             }
         }
 
